@@ -59,6 +59,7 @@
 
 #define DEVFILE			"/dev/servoblaster"
 #define CFGFILE			"/dev/servoblaster-cfg"
+#define OUTFILE			"/dev/servoblaster-servo-%d"
 
 #define PAGE_SIZE		4096
 #define PAGE_SHIFT		12
@@ -449,6 +450,22 @@ set_servo_idle(int servo)
 		gpio_set(servo2gpio[servo], invert ? 1 : 0);
 }
 
+static void
+set_servo_width(int servo, int value)
+{
+	servowidth[servo] = value;
+	char buffer[50];
+	snprintf(buffer, 50, OUTFILE, servo);
+	int fd = open(buffer, O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
+	if (fd >= 0) {
+		snprintf(buffer, 50, "%d", value);
+		write(fd, buffer, strlen(buffer));
+	} else {
+		fprintf(stderr, "Could not open file %s\n", buffer);
+	}
+	close(fd);
+}
+
 /* Carefully add or remove bits from the turnoff_mask such that regardless
  * of where the DMA controller is in its cycle, and whether we are increasing
  * or decreasing the pulse width, the generated pulse will only ever be the
@@ -491,7 +508,7 @@ set_servo(int servo, int width)
 				dp = turnoff_mask;
 		}
 	}
-	servowidth[servo] = width;
+	set_servo_width(servo, width);
 	if (width == 0) {
 		turnon_mask[servo] = 0;
 	} else {
@@ -586,7 +603,7 @@ init_ctrl_data(void)
 	memset(turnon_mask, 0, MAX_SERVOS * sizeof(*turnon_mask));
 
 	for (servo = 0 ; servo < MAX_SERVOS; servo++) {
-		servowidth[servo] = 0;
+		set_servo_width(servo, 0);
 		if (servo2gpio[servo] != DMY) {
 			numservos++;
 			maskall |= 1 << servo2gpio[servo];
