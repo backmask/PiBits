@@ -760,7 +760,10 @@ parse_width(int servo, char *width_arg)
 	} else if (!strcmp(p, "us")) {
 		width /= step_time_us;
 	} else if (!strcmp(p, "%")) {
-		width = width * (servo_max_ticks - servo_min_ticks) / 100.0 + servo_min_ticks;
+		width = width * (servo_max_ticks - servo_min_ticks) / 100.0;
+		if (*width_arg != '+' && *width_arg != '-') {
+			width += servo_min_ticks;
+		}
 	} else {
 		return -1;
 	}
