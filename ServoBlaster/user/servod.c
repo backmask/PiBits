@@ -252,6 +252,8 @@ static uint8_t p1pin2servo[NUM_P1PINS+1];
 static uint8_t p5pin2servo[NUM_P5PINS+1];
 static int servostart[MAX_SERVOS];
 static int servowidth[MAX_SERVOS];
+static int servo_min_ticks[MAX_SERVOS];
+static int servo_max_ticks[MAX_SERVOS];
 static int num_servos;
 static uint32_t gpiomode[MAX_SERVOS];
 static int restore_gpio_modes;
@@ -274,8 +276,6 @@ static struct timeval *servo_kill_time;
 static int dma_chan;
 static int idle_timeout;
 static int invert = 0;
-static int servo_min_ticks;
-static int servo_max_ticks;
 static int num_samples;
 static int num_cbs;
 static int num_pages;
@@ -760,9 +760,9 @@ parse_width(int servo, char *width_arg)
 	} else if (!strcmp(p, "us")) {
 		width /= step_time_us;
 	} else if (!strcmp(p, "%")) {
-		width = width * (servo_max_ticks - servo_min_ticks) / 100.0;
+		width = width * (servo_max_ticks[servo] - servo_min_ticks[servo]) / 100.0;
 		if (*width_arg != '+' && *width_arg != '-') {
-			width += servo_min_ticks;
+			width += servo_min_ticks[servo];
 		}
 	} else {
 		return -1;
@@ -770,17 +770,17 @@ parse_width(int servo, char *width_arg)
 	width = floor(width);
 	if (*width_arg == '+') {
 		width = servowidth[servo] + width;
-		if (width > servo_max_ticks)
-			width = servo_max_ticks;
+		if (width > servo_max_ticks[servo])
+			width = servo_max_ticks[servo];
 	} else if (*width_arg == '-') {
 		width = servowidth[servo] - width;
-		if (width < servo_min_ticks)
-			width = servo_min_ticks;
+		if (width < servo_min_ticks[servo])
+			width = servo_min_ticks[servo];
 	}
 
 	if (width == 0) {
 		return (int)width;
-	} else if (width < servo_min_ticks || width > servo_max_ticks) {
+	} else if (width < servo_min_ticks[servo] || width > servo_max_ticks[servo]) {
 		return -1;
 	} else {
 		return (int)width;
@@ -1028,7 +1028,7 @@ gpio2pinname(uint8_t gpio)
 }
 
 static int
-parse_min_max_arg(char *arg, char *name)
+get_min_max_value(char *arg, char *name)
 {
 	char *p;
 	double val = strtod(arg, &p);
@@ -1058,6 +1058,38 @@ parse_min_max_arg(char *arg, char *name)
 	}
 
 	return -1;	/* Never reached */
+}
+
+static void
+parse_min_max_arg(char *arg, int *target, char *name, int defaultValue)
+{
+	int matched, servo, valFragment, i;
+	char *sarg;
+	int deflt = defaultValue;
+	int nonDefaultValueMask = 0;
+
+	if (arg) {
+		sarg = strtok(arg, ",;");
+		while (sarg) {
+			fprintf(stdout, "tok: %s\n", sarg);
+			matched = sscanf(sarg, "%d:%d", &servo, &valFragment);
+			if (matched == 2 && servo >= 0 && servo < MAX_SERVOS) {
+				target[servo] = get_min_max_value(strchr(sarg, ':')+1, name);
+				nonDefaultValueMask &= 1 << servo;
+			} else if (matched == 1) {
+				deflt = get_min_max_value(sarg, name);
+			} else {
+				fatal("Invalid %s value specified (%s)\n", name, sarg);
+			}
+			sarg = strtok(0, ",;");
+		}
+	}
+
+	for (i = 0; i < MAX_SERVOS; ++i) {
+		if (((nonDefaultValueMask >> i) % 2) == 0) {
+			target[i] = deflt;
+		}
+	}
 }
 
 int
@@ -1230,17 +1262,8 @@ main(int argc, char **argv)
 		fatal("cycle-time must be at least 100 * step-size\n");
 	}
 
-	if (servo_min_arg) {
-		servo_min_ticks = parse_min_max_arg(servo_min_arg, "min");
-	} else {
-		servo_min_ticks = DEFAULT_SERVO_MIN_US / step_time_us;
-	}
-
-	if (servo_max_arg) {
-		servo_max_ticks = parse_min_max_arg(servo_max_arg, "max");
-	} else {
-		servo_max_ticks = DEFAULT_SERVO_MAX_US / step_time_us;
-	}
+	parse_min_max_arg(servo_min_arg, servo_min_ticks, "min", DEFAULT_SERVO_MIN_US / step_time_us);
+	parse_min_max_arg(servo_max_arg, servo_max_ticks, "max", DEFAULT_SERVO_MAX_US / step_time_us);
 
 	num_samples = cycle_time_us / step_time_us;
 	num_cbs =     num_samples * 2 + MAX_SERVOS;
@@ -1251,11 +1274,13 @@ main(int argc, char **argv)
 		fatal("Using too much memory; reduce cycle-time or increase step-size\n");
 	}
 
-	if (servo_max_ticks > num_samples) {
-		fatal("max value is larger than cycle time\n");
-	}
-	if (servo_min_ticks >= servo_max_ticks) {
-		fatal("min value is >= max value\n");
+	for (i = 0; i < MAX_SERVOS; i++) {
+		if (servo_max_ticks[i] > num_samples) {
+			fatal("servo %d: max value is larger than cycle time\n", i);
+		}
+		if (servo_min_ticks[i] >= servo_max_ticks[i]) {
+			fatal("servo %d: min value is >= max value (%d >= %d)\n", i, servo_min_ticks[i], servo_max_ticks[i]);
+		}
 	}
 
 	printf("\nBoard revision:            %7d\n", board_rev());
@@ -1268,10 +1293,6 @@ main(int argc, char **argv)
 	printf("Number of servos:          %7d\n", num_servos);
 	printf("Servo cycle time:          %7dus\n", cycle_time_us);
 	printf("Pulse increment step size: %7dus\n", step_time_us);
-	printf("Minimum width value:       %7d (%dus)\n", servo_min_ticks,
-						servo_min_ticks * step_time_us);
-	printf("Maximum width value:       %7d (%dus)\n", servo_max_ticks,
-						servo_max_ticks * step_time_us);
 	printf("Output levels:            %s\n", invert ? "Inverted" : "  Normal");
 	printf("\nUsing P1 pins:               %s\n", p1pins);
 	if (board_rev() > 1)
@@ -1281,6 +1302,10 @@ main(int argc, char **argv)
 		if (servo2gpio[i] == DMY)
 			continue;
 		printf("    %2d on %-5s          GPIO-%d\n", i, gpio2pinname(servo2gpio[i]), servo2gpio[i]);
+		printf("        Minimum width value:       %7d (%dus)\n", servo_min_ticks[i],
+						servo_min_ticks[i] * step_time_us);
+		printf("        Maximum width value:       %7d (%dus)\n", servo_max_ticks[i],
+						servo_max_ticks[i] * step_time_us);
 	}
 	printf("\n");
 
