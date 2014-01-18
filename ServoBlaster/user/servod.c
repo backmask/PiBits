@@ -788,6 +788,57 @@ parse_width(int servo, char *width_arg)
 }
 
 static void
+parse_command(char * line)
+{
+	int n, width, servo;
+	char width_arg[64];
+
+	if (line[0] == 'p' || line[0] == 'P') {
+		int hdr, pin;
+
+		n = sscanf(line+1, "%d-%d=%s", &hdr, &pin, width_arg);
+		if (n != 3) {
+			fprintf(stderr, "Bad input: %s", line);
+		} else if (hdr != 1 && hdr != 5) {
+			fprintf(stderr, "Invalid header P%d\n", hdr);
+		} else if (pin < 1 ||
+				(hdr == 1 && pin > NUM_P1PINS) ||
+				(hdr == 5 && pin > NUM_P5PINS)) {
+			fprintf(stderr, "Invalid pin number P%d-%d\n", hdr, pin);
+		} else if ((hdr == 1 && p1pin2servo[pin] == DMY) ||
+			   (hdr == 5 && p5pin2servo[pin] == DMY)) {
+				fprintf(stderr, "P%d-%d is not mapped to a servo\n", hdr, pin);
+		} else {
+			if (hdr == 1) {
+				servo = p1pin2servo[pin];
+			} else {
+				servo = p5pin2servo[pin];
+			}
+			if ((width = parse_width(servo, width_arg)) < 0) {
+				fprintf(stderr, "Invalid width specified\n");
+			} else {
+				set_servo(servo, width);
+			}
+		}
+	} else {
+		n = sscanf(line, "%d=%s", &servo, width_arg);
+		if (!strcmp(line, "debug\n")) {
+			do_debug();
+		} else if (n != 2) {
+			fprintf(stderr, "Bad input: %s", line);
+		} else if (servo < 0 || servo >= MAX_SERVOS) {
+			fprintf(stderr, "Invalid servo number %d\n", servo);
+		} else if (servo2gpio[servo] == DMY) {
+			fprintf(stderr, "Servo %d is not mapped to a GPIO pin\n", servo);
+		} else if ((width = parse_width(servo, width_arg)) < 0) {
+			fprintf(stderr, "Invalid width specified\n (%s)", width_arg);
+		} else {
+			set_servo(servo, width);
+		}
+	}
+}
+
+static void
 go_go_go(void)
 {
 	int fd;
@@ -799,9 +850,8 @@ go_go_go(void)
 		fatal("servod: Failed to open %s: %m\n", DEVFILE);
 
 	for (;;) {
-		int n, width, servo;
+		int n;
 		fd_set ifds;
-		char width_arg[64];
 
 		FD_ZERO(&ifds);
 		FD_SET(fd, &ifds);
@@ -809,57 +859,13 @@ go_go_go(void)
 		if ((n = select(fd+1, &ifds, NULL, NULL, &tv)) != 1)
 			continue;
 		while (read(fd, line+nchars, 1) == 1) {
-			if (line[nchars] == '\n') {
-				line[++nchars] = '\0';
+			if (line[nchars] == '\n' || line[nchars] == ';') {
+				line[nchars] = '\0';
 				nchars = 0;
-				if (line[0] == 'p' || line[0] == 'P') {
-					int hdr, pin, width;
-
-					n = sscanf(line+1, "%d-%d=%s", &hdr, &pin, width_arg);
-					if (n != 3) {
-						fprintf(stderr, "Bad input: %s", line);
-					} else if (hdr != 1 && hdr != 5) {
-						fprintf(stderr, "Invalid header P%d\n", hdr);
-					} else if (pin < 1 ||
-							(hdr == 1 && pin > NUM_P1PINS) ||
-							(hdr == 5 && pin > NUM_P5PINS)) {
-						fprintf(stderr, "Invalid pin number P%d-%d\n", hdr, pin);
-					} else if ((hdr == 1 && p1pin2servo[pin] == DMY) ||
-						   (hdr == 5 && p5pin2servo[pin] == DMY)) {
-							fprintf(stderr, "P%d-%d is not mapped to a servo\n", hdr, pin);
-					} else {
-						if (hdr == 1) {
-							servo = p1pin2servo[pin];
-						} else {
-							servo = p5pin2servo[pin];
-						}
-						if ((width = parse_width(servo, width_arg)) < 0) {
-							fprintf(stderr, "Invalid width specified\n");
-						} else {
-							set_servo(servo, width);
-						}
-					}
-				} else {
-					n = sscanf(line, "%d=%s", &servo, width_arg);
-					if (!strcmp(line, "debug\n")) {
-						do_debug();
-					} else if (n != 2) {
-						fprintf(stderr, "Bad input: %s", line);
-					} else if (servo < 0 || servo >= MAX_SERVOS) {
-						fprintf(stderr, "Invalid servo number %d\n", servo);
-					} else if (servo2gpio[servo] == DMY) {
-						fprintf(stderr, "Servo %d is not mapped to a GPIO pin\n", servo);
-					} else if ((width = parse_width(servo, width_arg)) < 0) {
-						fprintf(stderr, "Invalid width specified\n");
-					} else {
-						set_servo(servo, width);
-					}
-				}
-			} else {
-				if (++nchars >= 126) {
-					fprintf(stderr, "Input too long\n");
-					nchars = 0;
-				}
+				parse_command(line);
+			} else if (++nchars >= 126) {
+				fprintf(stderr, "Input too long\n");
+				nchars = 0;
 			}
 		}
 	}
